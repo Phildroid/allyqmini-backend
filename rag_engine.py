@@ -45,12 +45,31 @@ llm = ChatGoogleGenerativeAI(
 print("✅ Gemini LLM ready")
 
 # ── 4. EMBEDDINGS via direct REST call to v1 (bypasses all SDK v1beta routing) ──
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+import requests
 
-embeddings = GoogleGenerativeAIEmbeddings(
-    model="models/embedding-001",
-    google_api_key=os.getenv("GOOGLE_API_KEY")
-)
+class GoogleEmbeddings(Embeddings):
+    def __init__(self):
+        self.api_key = os.getenv("GOOGLE_API_KEY")
+        self.url = "https://generativelanguage.googleapis.com/v1/models/gemini-embedding-001:embedContent"
+
+    def _embed(self, text):
+        resp = requests.post(
+            f"{self.url}?key={self.api_key}",
+            json={
+                "model": "models/gemini-embedding-001",
+                "content": {"parts": [{"text": text}]}
+            }
+        )
+        resp.raise_for_status()
+        return resp.json()["embedding"]["values"]
+
+    def embed_documents(self, texts):
+        return [self._embed(t) for t in texts]
+
+    def embed_query(self, text):
+        return self._embed(text)
+
+embeddings = GoogleEmbeddings()
 print("✅ Google embeddings ready")
 bge_embeddings = embeddings
 

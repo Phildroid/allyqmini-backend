@@ -12,7 +12,9 @@ from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.embeddings import Embeddings
+import google.generativeai as genai
 from langchain_community.vectorstores import FAISS
 
 import pypdf
@@ -45,15 +47,27 @@ llm = ChatGoogleGenerativeAI(
 print("✅ Gemini LLM ready")
 
 # ── 4. GOOGLE EMBEDDINGS (replaces BGE / sentence-transformers) ──────────────
-embeddings = GoogleGenerativeAIEmbeddings(
-    model="text-embedding-004",
-    google_api_key=os.getenv("GOOGLE_API_KEY"),
-    task_type="retrieval_document",
-    client_options={"api_endpoint": "generativelanguage.googleapis.com"}
-)
-print("✅ Google embeddings ready")
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-# Alias so any code referencing bge_embeddings still works
+class GoogleEmbeddings(Embeddings):
+    def embed_documents(self, texts):
+        result = genai.embed_content(
+            model="models/text-embedding-004",
+            content=texts,
+            task_type="retrieval_document"
+        )
+        return result["embedding"] if isinstance(texts, str) else [r for r in result["embedding"]]
+    
+    def embed_query(self, text):
+        result = genai.embed_content(
+            model="models/text-embedding-004",
+            content=text,
+            task_type="retrieval_query"
+        )
+        return result["embedding"]
+
+embeddings = GoogleEmbeddings()
+print("✅ Google embeddings ready")
 bge_embeddings = embeddings
 
 # ── 5. GLOBAL VECTOR STORE ───────────────────────────────────────────────────

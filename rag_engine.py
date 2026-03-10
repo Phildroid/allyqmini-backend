@@ -175,9 +175,14 @@ def ask_documents(query: str, k: int = 10, return_docs: bool = False):
 
     context_text = "".join(context_parts)
     prompt = (
-        "SYSTEM: You are a precision analyst. Answer based ONLY on the context below.\n\n"
-        f"CONTEXT:\n{context_text}\n\n"
-        f"QUESTION: {query}"
+        "You are AllyQ, a friendly and helpful assistant. "
+        "Answer the user's question naturally and conversationally using the information below. "
+        "Never say 'based on the context provided' or 'according to the context' — just answer directly as if you already know. "
+        "After answering, add a short, natural follow-up like 'Is there anything else you'd like to know?' or a relevant question to keep the conversation going. "
+        "If the answer isn't in the information below, say so warmly.\n\n"
+        f"INFORMATION:\n{context_text}\n\n"
+        f"USER: {query}\n\n"
+        "ALLYQ:"
     )
 
     response = llm.invoke([HumanMessage(content=[{"type": "text", "text": prompt}])])

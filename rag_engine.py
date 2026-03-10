@@ -14,7 +14,8 @@ from langchain_core.messages import HumanMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.embeddings import Embeddings
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from langchain_community.vectorstores import FAISS
 
 import pypdf
@@ -46,25 +47,24 @@ llm = ChatGoogleGenerativeAI(
 )
 print("✅ Gemini LLM ready")
 
-# ── 4. GOOGLE EMBEDDINGS (replaces BGE / sentence-transformers) ──────────────
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-
+# ── 4. GOOGLE EMBEDDINGS via new google-genai SDK (uses v1, not v1beta) ──────
 class GoogleEmbeddings(Embeddings):
+    def __init__(self):
+        self.client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+
     def embed_documents(self, texts):
-        result = genai.embed_content(
-            model="models/text-embedding-004",
-            content=texts,
-            task_type="retrieval_document"
+        result = self.client.models.embed_content(
+            model="text-embedding-004",
+            contents=texts,
         )
-        return result["embedding"] if isinstance(texts, str) else [r for r in result["embedding"]]
-    
+        return [e.values for e in result.embeddings]
+
     def embed_query(self, text):
-        result = genai.embed_content(
-            model="models/text-embedding-004",
-            content=text,
-            task_type="retrieval_query"
+        result = self.client.models.embed_content(
+            model="text-embedding-004",
+            contents=[text],
         )
-        return result["embedding"]
+        return result.embeddings[0].values
 
 embeddings = GoogleEmbeddings()
 print("✅ Google embeddings ready")

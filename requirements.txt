@@ -12,3 +12,4 @@ openpyxl
 python-pptx
 python-dotenv
 google-generativeai
+pandas

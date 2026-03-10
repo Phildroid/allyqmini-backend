@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+langchain
+langchain-community
+langchain-google-genai
+faiss-cpu
+sentence-transformers
+pypdf
+openpyxl
+python-pptx
+python-dotenv
+google-generativeai

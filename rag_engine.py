@@ -14,6 +14,7 @@ from langchain_core.messages import HumanMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.vectorstores import FAISS
+from langchain_core.embeddings import Embeddings
 
 import pypdf
 from pptx import Presentation

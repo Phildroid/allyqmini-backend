@@ -120,3 +120,10 @@ def query_documents(req: QueryRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+    
+@app.get("/list-models")
+def list_models():
+    import google.generativeai as genai
+    genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+    models = [m.name for m in genai.list_models() if "embedContent" in m.supported_generation_methods]
+    return {"embedding_models": models}

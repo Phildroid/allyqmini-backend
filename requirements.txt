@@ -13,4 +13,3 @@ python-dotenv
 google-generativeai
 pandas
 numpy
-requests

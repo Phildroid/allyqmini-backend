@@ -10,7 +10,6 @@ pypdf
 openpyxl
 python-pptx
 python-dotenv
-google-genai>=1.0.0
+google-generativeai
 pandas
 numpy
-requests

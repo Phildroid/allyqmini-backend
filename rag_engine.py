@@ -50,13 +50,13 @@ print("✅ Gemini LLM ready")
 class GoogleEmbeddings(Embeddings):
     def __init__(self):
         self.api_key = os.getenv("GOOGLE_API_KEY")
-        self.url = "https://generativelanguage.googleapis.com/v1/models/text-embedding-004:embedContent"
+        self.url = "https://generativelanguage.googleapis.com/v1/models/embedding-001:embedContent"
 
     def _embed(self, text):
         resp = requests.post(
             f"{self.url}?key={self.api_key}",
             json={
-                "model": "models/text-embedding-004",
+                "model": "models/embedding-001",
                 "content": {"parts": [{"text": text}]}
             }
         )

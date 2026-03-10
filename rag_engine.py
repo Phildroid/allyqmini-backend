@@ -47,7 +47,9 @@ print("✅ Gemini LLM ready")
 # ── 4. GOOGLE EMBEDDINGS (replaces BGE / sentence-transformers) ──────────────
 embeddings = GoogleGenerativeAIEmbeddings(
     model="text-embedding-004",
-    google_api_key=os.getenv("GOOGLE_API_KEY")
+    google_api_key=os.getenv("GOOGLE_API_KEY"),
+    task_type="retrieval_document",
+    client_options={"api_endpoint": "generativelanguage.googleapis.com"}
 )
 print("✅ Google embeddings ready")
 

@@ -7,12 +7,7 @@ import functools
 
 import numpy as np
 import pandas as pd
-
-import google.genai as _check_genai
-print(f"google-genai version: {_check_genai.__version__}")
-import langchain_google_genai as _check_lgn
-print(f"langchain-google-genai version: {_check_lgn.__version__}")
-
+import requests
 from dotenv import load_dotenv
 
 from langchain_core.documents import Document
@@ -20,8 +15,6 @@ from langchain_core.messages import HumanMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.embeddings import Embeddings
-from google import genai
-from google.genai import types
 from langchain_community.vectorstores import FAISS
 
 import pypdf
@@ -53,24 +46,28 @@ llm = ChatGoogleGenerativeAI(
 )
 print("✅ Gemini LLM ready")
 
-# ── 4. GOOGLE EMBEDDINGS via new google-genai SDK (uses v1, not v1beta) ──────
+# ── 4. EMBEDDINGS via direct REST call to v1 (bypasses all SDK v1beta routing) ──
 class GoogleEmbeddings(Embeddings):
     def __init__(self):
-        self.client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+        self.api_key = os.getenv("GOOGLE_API_KEY")
+        self.url = "https://generativelanguage.googleapis.com/v1/models/text-embedding-004:embedContent"
+
+    def _embed(self, text):
+        resp = requests.post(
+            f"{self.url}?key={self.api_key}",
+            json={
+                "model": "models/text-embedding-004",
+                "content": {"parts": [{"text": text}]}
+            }
+        )
+        resp.raise_for_status()
+        return resp.json()["embedding"]["values"]
 
     def embed_documents(self, texts):
-        result = self.client.models.embed_content(
-            model="text-embedding-004",
-            contents=texts,
-        )
-        return [e.values for e in result.embeddings]
+        return [self._embed(t) for t in texts]
 
     def embed_query(self, text):
-        result = self.client.models.embed_content(
-            model="text-embedding-004",
-            contents=[text],
-        )
-        return result.embeddings[0].values
+        return self._embed(text)
 
 embeddings = GoogleEmbeddings()
 print("✅ Google embeddings ready")

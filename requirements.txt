@@ -13,3 +13,4 @@ python-dotenv
 google-genai>=1.0.0
 pandas
 numpy
+requests

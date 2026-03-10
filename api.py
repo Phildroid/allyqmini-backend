@@ -1,22 +1,23 @@
 # api.py
-# Run with: uvicorn api:app --reload --port 8000
+# Local:  uvicorn api:app --reload --port 8000
+# Render: uvicorn api:app --host 0.0.0.0 --port $PORT
 
 import os
 import shutil
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-import rag_engine  # your extracted notebook logic
+import rag_engine
 
 # ── PATHS ────────────────────────────────────────────────────────────────────
-# Resolve paths relative to THIS file, not the working directory
-BASE_DIR     = os.path.dirname(os.path.abspath(__file__))          # .../allyq-mini/backend
+BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.normpath(os.path.join(BASE_DIR, "..", "frontend"))
 HTML_FILE    = os.path.join(FRONTEND_DIR, "allyq-mini.html")
+UPLOAD_DIR   = os.path.join(BASE_DIR, "knowledge_drop")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # ── APP SETUP ────────────────────────────────────────────────────────────────
 app = FastAPI(title="AllyQ Mini API", version="1.0.0")
@@ -24,51 +25,38 @@ app = FastAPI(title="AllyQ Mini API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ── SERVE FRONTEND ───────────────────────────────────────────────────────────
-if os.path.isdir(FRONTEND_DIR):
-    app.mount("/frontend", StaticFiles(directory=FRONTEND_DIR), name="frontend")
-    print(f"✅ Serving frontend from: {FRONTEND_DIR}")
-else:
-    print(f"⚠️  Frontend folder not found at: {FRONTEND_DIR}")
-
-@app.get("/")
-def root():
-    if os.path.isfile(HTML_FILE):
-        return FileResponse(HTML_FILE)
-    return {
-        "message": "AllyQ Mini API is running. "
-                   "Frontend not found — open allyq-mini.html directly in your browser."
-    }
-
 
 # ── SCHEMAS ──────────────────────────────────────────────────────────────────
 class QueryRequest(BaseModel):
     query: str
     k: int = 10
 
+# ── ROUTES ───────────────────────────────────────────────────────────────────
 
-# ── ENDPOINTS ────────────────────────────────────────────────────────────────
+@app.get("/")
+def root():
+    # Serve the HTML file if running locally with frontend present
+    if os.path.isfile(HTML_FILE):
+        return FileResponse(HTML_FILE)
+    # On Render (no frontend folder), just return a health check
+    return JSONResponse({"status": "AllyQ Mini API is running"})
+
 
 @app.get("/status")
 def status():
-    """Health check — frontend polls this on load to show engine status."""
     return {
         "engine": "ready",
         "index_loaded": rag_engine.vector_store is not None,
-        "device": rag_engine.device,
+        "device": str(rag_engine.device),
     }
 
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
-    """
-    Receives a file from the frontend, saves it to knowledge_drop/,
-    and indexes it into FAISS via rag_engine.
-    """
     allowed_extensions = {".pdf", ".xlsx", ".xls", ".pptx"}
     ext = os.path.splitext(file.filename)[1].lower()
 
@@ -78,17 +66,12 @@ async def upload_file(file: UploadFile = File(...)):
             detail=f"Unsupported file type '{ext}'. Allowed: PDF, XLSX, XLS, PPTX"
         )
 
-    # Save uploaded file next to api.py in backend/knowledge_drop/
-    knowledge_dir = os.path.join(BASE_DIR, "knowledge_drop")
-    os.makedirs(knowledge_dir, exist_ok=True)
-    save_path = os.path.join(knowledge_dir, file.filename)
-
+    save_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(save_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
     print(f"📥 Received: {file.filename}")
 
-    # Index it
     try:
         chunks = rag_engine.process_and_index_file(save_path)
         return {
@@ -103,10 +86,6 @@ async def upload_file(file: UploadFile = File(...)):
 
 @app.post("/query")
 def query_documents(req: QueryRequest):
-    """
-    Receives a query from the frontend chat input,
-    runs RAG retrieval + Gemini reasoning, returns answer + sources.
-    """
     if not req.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
 

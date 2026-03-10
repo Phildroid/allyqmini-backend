@@ -7,6 +7,12 @@ import functools
 
 import numpy as np
 import pandas as pd
+
+import google.genai as _check_genai
+print(f"google-genai version: {_check_genai.__version__}")
+import langchain_google_genai as _check_lgn
+print(f"langchain-google-genai version: {_check_lgn.__version__}")
+
 from dotenv import load_dotenv
 
 from langchain_core.documents import Document

@@ -1,9 +1,8 @@
 # rag_engine.py
-# Extracted from AllyQ Mini notebook — do NOT run this in Jupyter, import it from api.py
+# Session-isolated RAG engine — each session_id gets its own FAISS index
 
 import os
 import time
-import functools
 
 import numpy as np
 import pandas as pd
@@ -12,28 +11,28 @@ from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
+
 import pypdf
 from pptx import Presentation
 
-# ── 1. ENVIRONMENT ──────────────────────────────────────────────────────────
+# ── 1. ENVIRONMENT ────────────────────────────────────────────────────────────
 load_dotenv()
 
 if not os.getenv("GOOGLE_API_KEY"):
-    raise EnvironmentError("❌ GOOGLE_API_KEY not found. Add it to your .env file.")
+    raise EnvironmentError("❌ GOOGLE_API_KEY not found.")
 
 device = "cpu"
-print("✅ rag_engine loaded (cloud embeddings mode)")
+print("✅ rag_engine loaded (session-isolated mode)")
 
-# ── 2. TEXT SPLITTER ─────────────────────────────────────────────────────────
+# ── 2. SHARED SINGLETONS (stateless — safe to share) ─────────────────────────
 text_splitter = RecursiveCharacterTextSplitter(
     chunk_size=1000,
     chunk_overlap=150,
     separators=["\n\n", "\n", " ", ""]
 )
 
-# ── 3. LLM (Gemini) ──────────────────────────────────────────────────────────
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     temperature=0,
@@ -41,25 +40,31 @@ llm = ChatGoogleGenerativeAI(
     convert_system_message_to_human=True,
     max_retries=2
 )
-print("✅ Gemini LLM ready")
-
-# ── 4. EMBEDDINGS via direct REST call to v1 (bypasses all SDK v1beta routing) ──
-
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 embeddings = GoogleGenerativeAIEmbeddings(
     model="models/gemini-embedding-001",
     google_api_key=os.getenv("GOOGLE_API_KEY")
 )
-print("✅ Google embeddings ready")
-bge_embeddings = embeddings
 
-# ── 5. GLOBAL VECTOR STORE ───────────────────────────────────────────────────
-vector_store = None
+print("✅ LLM + Embeddings ready")
 
+# ── 3. SESSION STORE ──────────────────────────────────────────────────────────
+# Maps session_id (str) -> { "index": FAISS | None, "files": [str] }
+_sessions: dict = {}
 
-# ── 6. EXTRACTION FUNCTIONS ──────────────────────────────────────────────────
+def get_session(session_id: str) -> dict:
+    if session_id not in _sessions:
+        _sessions[session_id] = {"index": None, "files": []}
+    return _sessions[session_id]
 
+def clear_session(session_id: str):
+    if session_id in _sessions:
+        del _sessions[session_id]
+
+def list_sessions() -> list:
+    return list(_sessions.keys())
+
+# ── 4. EXTRACTION FUNCTIONS ───────────────────────────────────────────────────
 def extract_from_pdf(file_path):
     docs = []
     reader = pypdf.PdfReader(file_path)
@@ -71,7 +76,6 @@ def extract_from_pdf(file_path):
         ))
     return docs
 
-
 def extract_from_excel(file_path):
     sheets = pd.read_excel(file_path, sheet_name=None)
     docs = []
@@ -79,23 +83,12 @@ def extract_from_excel(file_path):
         df = df.dropna(how="all").dropna(axis=1, how="all")
         headers = df.columns.tolist()
         for index, row in df.iterrows():
-            row_parts = []
-            for header in headers:
-                val = row[header]
-                if pd.notna(val):
-                    row_parts.append(f"{header}: {val}")
-            row_str = " | ".join(row_parts)
+            row_parts = [f"{h}: {row[h]}" for h in headers if pd.notna(row[h])]
             docs.append(Document(
-                page_content=f"SHEET: {sheet_name} | ROW {index}: {row_str}",
-                metadata={
-                    "source": file_path,
-                    "sheet": sheet_name,
-                    "row": index,
-                    "is_tabular": True
-                }
+                page_content=f"SHEET: {sheet_name} | ROW {index}: {' | '.join(row_parts)}",
+                metadata={"source": file_path, "sheet": sheet_name, "row": index, "is_tabular": True}
             ))
     return docs
-
 
 def extract_from_pptx(file_path):
     prs = Presentation(file_path)
@@ -108,77 +101,56 @@ def extract_from_pptx(file_path):
         ))
     return docs
 
-
-# ── 7. INDEXING ──────────────────────────────────────────────────────────────
-
-def process_and_index_file(file_path):
-    global vector_store
+# ── 5. INDEXING (session-scoped) ──────────────────────────────────────────────
+def process_and_index_file(file_path: str, session_id: str) -> int:
+    """Index a file into the given session's private FAISS index."""
+    session = get_session(session_id)
     ext = os.path.splitext(file_path)[1].lower()
 
-    print(f"🛠️  Indexing: {os.path.basename(file_path)}...")
+    print(f"🛠️  [{session_id}] Indexing: {os.path.basename(file_path)}")
 
     if ext == ".pdf":
-        new_docs = extract_from_pdf(file_path)
-        final_chunks = text_splitter.split_documents(new_docs)
+        chunks = text_splitter.split_documents(extract_from_pdf(file_path))
     elif ext in [".xlsx", ".xls"]:
-        final_chunks = extract_from_excel(file_path)
+        chunks = extract_from_excel(file_path)
     elif ext == ".pptx":
-        new_docs = extract_from_pptx(file_path)
-        final_chunks = text_splitter.split_documents(new_docs)
+        chunks = text_splitter.split_documents(extract_from_pptx(file_path))
     else:
         raise ValueError(f"Unsupported file type: {ext}")
 
-    if vector_store is not None:
-        vector_store.add_documents(final_chunks)
-        _cached_search.cache_clear()
-        print(f"🚀 Added {len(final_chunks)} chunks to existing index.")
+    if session["index"] is not None:
+        session["index"].add_documents(chunks)
+        print(f"🚀 [{session_id}] Added {len(chunks)} chunks to existing session index.")
     else:
-        print("🧠 Building fresh FAISS index...")
-        vector_store = FAISS.from_documents(final_chunks, embeddings)
+        session["index"] = FAISS.from_documents(chunks, embeddings)
+        print(f"🧠 [{session_id}] Created new session index with {len(chunks)} chunks.")
 
-    vector_store.save_local("faiss_index")
-    print(f"✅ Indexing complete — {len(final_chunks)} chunks saved.")
-    return final_chunks
+    session["files"].append(os.path.basename(file_path))
+    return len(chunks)
 
+# ── 6. QUERY (session-scoped) ─────────────────────────────────────────────────
+def ask_documents(query: str, session_id: str, k: int = 10):
+    """Query ONLY the documents indexed in this session."""
+    session = get_session(session_id)
 
-# ── 8. CACHED SEARCH ─────────────────────────────────────────────────────────
-
-@functools.lru_cache(maxsize=32)
-def _cached_search(query: str, k: int):
-    return vector_store.similarity_search(query, k=k)
-
-
-# ── 9. QUERY FUNCTION ────────────────────────────────────────────────────────
-
-def ask_documents(query: str, k: int = 10, return_docs: bool = False):
-    global vector_store
-
-    if vector_store is None:
-        if os.path.exists("faiss_index"):
-            print("💾 Loading FAISS index from disk...")
-            vector_store = FAISS.load_local(
-                "faiss_index", embeddings, allow_dangerous_deserialization=True
-            )
-        else:
-            raise RuntimeError("No index found. Please upload and index a file first.")
+    if session["index"] is None:
+        raise RuntimeError("No documents indexed in this session. Please upload a file first.")
 
     start = time.time()
-    results = _cached_search(query, k)
+    results = session["index"].similarity_search(query, k=k)
 
     context_parts = []
     for res in results:
         source = os.path.basename(res.metadata.get("source", "Unknown"))
-        loc = res.metadata.get(
-            "sheet", res.metadata.get("slide", res.metadata.get("page", "Data"))
-        )
-        context_parts.append(f"\n--- FROM {source} ({loc}) ---\n{res.page_content}\n")
+        loc = res.metadata.get("sheet", res.metadata.get("slide", res.metadata.get("page", "—")))
+        context_parts.append(f"\n--- FROM {source} (section: {loc}) ---\n{res.page_content}\n")
 
     context_text = "".join(context_parts)
     prompt = (
         "You are AllyQ, a friendly and helpful assistant. "
         "Answer the user's question naturally and conversationally using the information below. "
-        "Never say 'based on the context provided' or 'according to the context' — just answer directly as if you already know. "
-        "After answering, add a short, natural follow-up like 'Is there anything else you'd like to know?' or a relevant question to keep the conversation going. "
+        "Never say 'based on the context provided' or 'according to the context' — just answer directly. "
+        "After answering, add a short natural follow-up to keep the conversation going. "
         "If the answer isn't in the information below, say so warmly.\n\n"
         f"INFORMATION:\n{context_text}\n\n"
         f"USER: {query}\n\n"
@@ -186,10 +158,16 @@ def ask_documents(query: str, k: int = 10, return_docs: bool = False):
     )
 
     response = llm.invoke([HumanMessage(content=[{"type": "text", "text": prompt}])])
-    answer = response.content
+    print(f"⏱️  [{session_id}] Latency: {time.time() - start:.2f}s")
 
-    print(f"⏱️  Latency: {time.time() - start:.2f}s")
+    sources = []
+    seen = set()
+    for res in results:
+        src = os.path.basename(res.metadata.get("source", "Unknown"))
+        loc = str(res.metadata.get("sheet", res.metadata.get("slide", res.metadata.get("page", "—"))))
+        key = f"{src}:{loc}"
+        if key not in seen:
+            seen.add(key)
+            sources.append({"file": src, "loc": loc})
 
-    if return_docs:
-        return answer, results
-    return answer
+    return response.content, sources

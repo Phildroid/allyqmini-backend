@@ -1,26 +1,15 @@
 # api.py
-# Local:  uvicorn api:app --reload --port 8000
-# Render: uvicorn api:app --host 0.0.0.0 --port $PORT
-
-import os
-import shutil
-
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+import os, shutil, uuid
 
-import rag_engine
+from rag_engine import process_and_index_file, ask_documents, clear_session, list_sessions
 
-# ── PATHS ────────────────────────────────────────────────────────────────────
-BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
-FRONTEND_DIR = os.path.normpath(os.path.join(BASE_DIR, "..", "frontend"))
-HTML_FILE    = os.path.join(FRONTEND_DIR, "allyq-mini.html")
-UPLOAD_DIR   = os.path.join(BASE_DIR, "knowledge_drop")
+UPLOAD_DIR = "knowledge_drop"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# ── APP SETUP ────────────────────────────────────────────────────────────────
-app = FastAPI(title="AllyQ Mini API", version="1.0.0")
+app = FastAPI(title="AllyQ Mini API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,94 +19,64 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── SCHEMAS ──────────────────────────────────────────────────────────────────
+# ── MODELS ────────────────────────────────────────────────────────────────────
 class QueryRequest(BaseModel):
     query: str
+    session_id: str
     k: int = 10
 
-# ── ROUTES ───────────────────────────────────────────────────────────────────
+class ClearRequest(BaseModel):
+    session_id: str
 
+# ── ROUTES ────────────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
-    # Serve the HTML file if running locally with frontend present
-    if os.path.isfile(HTML_FILE):
-        return FileResponse(HTML_FILE)
-    # On Render (no frontend folder), just return a health check
-    return JSONResponse({"status": "AllyQ Mini API is running"})
-
+    return {"status": "ok", "service": "AllyQ Mini API"}
 
 @app.get("/status")
 def status():
     return {
-        "engine": "ready",
-        "index_loaded": rag_engine.vector_store is not None,
-        "device": str(rag_engine.device),
+        "status": "ok",
+        "device": "cpu",
+        "active_sessions": len(list_sessions()),
+        "session_ids": list_sessions()
     }
 
-
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
-    allowed_extensions = {".pdf", ".xlsx", ".xls", ".pptx"}
+async def upload(file: UploadFile = File(...), session_id: str = "default"):
     ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in [".pdf", ".xlsx", ".xls", ".pptx"]:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
 
-    if ext not in allowed_extensions:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type '{ext}'. Allowed: PDF, XLSX, XLS, PPTX"
-        )
+    # Store each session's files in its own subfolder to avoid collisions
+    session_dir = os.path.join(UPLOAD_DIR, session_id)
+    os.makedirs(session_dir, exist_ok=True)
 
-    save_path = os.path.join(UPLOAD_DIR, file.filename)
-    with open(save_path, "wb") as f:
+    dest = os.path.join(session_dir, file.filename)
+    with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    print(f"📥 Received: {file.filename}")
-
     try:
-        chunks = rag_engine.process_and_index_file(save_path)
-        return {
-            "success": True,
-            "filename": file.filename,
-            "chunks": len(chunks),
-            "message": f"Successfully indexed {len(chunks)} chunks"
-        }
+        chunks = process_and_index_file(dest, session_id)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Indexing failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
+    return {"status": "indexed", "file": file.filename, "chunks": chunks, "session_id": session_id}
 
 @app.post("/query")
-def query_documents(req: QueryRequest):
+async def query(req: QueryRequest):
     if not req.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
-
     try:
-        answer, source_docs = rag_engine.ask_documents(
-            query=req.query,
-            k=req.k,
-            return_docs=True
-        )
-
-        sources = []
-        for doc in source_docs:
-            sources.append({
-                "file": os.path.basename(doc.metadata.get("source", "Unknown")),
-                "loc": doc.metadata.get(
-                    "sheet",
-                    doc.metadata.get(
-                        "slide",
-                        f"Page {doc.metadata.get('page', '?')}"
-                    )
-                )
-            })
-
-        return {
-            "success": True,
-            "answer": answer,
-            "sources": sources,
-            "chunks_searched": req.k
-        }
-
+        answer, sources = ask_documents(req.query, req.session_id, req.k)
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
-    
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"answer": answer, "sources": sources, "session_id": req.session_id}
+
+@app.post("/clear-session")
+async def clear(req: ClearRequest):
+    clear_session(req.session_id)
+    return {"status": "cleared", "session_id": req.session_id}

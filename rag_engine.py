@@ -34,7 +34,7 @@ text_splitter = RecursiveCharacterTextSplitter(
 )
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",
+    model="gemini-1.5-flash-001",
     temperature=0,
     google_api_key=os.getenv("GOOGLE_API_KEY"),
     convert_system_message_to_human=True,
